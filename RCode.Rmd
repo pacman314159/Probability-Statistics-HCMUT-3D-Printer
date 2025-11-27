@@ -1,0 +1,385 @@
+# Data preparation
+
+## Import data
+
+```{r}
+setwd(".")
+data <- read.csv("data.csv")
+```
+
+## Data cleaning
+
+Display the structure of the data:
+
+```{r}
+str(data)
+```
+
+Check whether the data has missing values or not:
+
+```{r}
+anyNA(data)
+sum(duplicated(data))
+dim(data)
+```
+
+# Data visualization
+
+Install necessary packages:
+
+```{r}
+options(repos=c(CRAN="https://cran.r-project.org"))
+
+install.packages("pacman")
+library(pacman)       # Facilitates package management and loading in R.
+
+p_load(tidyr, tidyverse, ggcorrplot, patchwork, caret, randomForest)
+library(tidyr)        # Tidies and reshapes data efficiently.
+library(tidyverse)    # Data manipulation & visualization suite (dplyr, ggplot2,...).
+library(ggcorrplot)   # Visualizes correlation matrices with heatmaps.
+library(patchwork)    # Combines ggplot2 plots into a single display.
+library(caret)        # Data preprocessing and model training
+library(randomForest) # Random forest algorithm implementation
+```
+
+Set categorical variables as numeric values:
+
+```{r}
+temp_data <- data %>%
+  mutate(infill_pattern = as.numeric(infill_pattern != "grid"),
+         material = as.numeric(material != "abs"))
+gathered_data <- gather(temp_data)
+
+str(temp_data[c("infill_pattern", "material")]) # review the data
+```
+
+## Descriptive statistics
+
+```{r}
+summary(temp_data)
+```
+
+## Histogram
+
+```{r}
+gathered_data <- gathered_data %>%
+  mutate(key = factor(key, levels = unique(gathered_data$key)))
+
+ggplot(data = gathered_data, aes(x = value)) + 
+  geom_histogram() +
+  facet_wrap(~ key, scales = "free", nrow = 4) +
+  labs(x = NULL, y = NULL)
+```
+
+## Box plot
+
+```{r}
+gathered_data_filtered <- gathered_data %>%
+  filter(key != "infill_pattern" & key != "material")
+
+ggplot(data = gathered_data_filtered, aes(y = as.numeric(value))) +
+  stat_boxplot(geom = "errorbar", width = 0.2) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_point(aes(x = -0.75), 
+    position = position_jitter(width = 0.25, height = 0)) +
+  facet_wrap(~ key, scales = "free", nrow = 2) +
+  labs(x = NULL, y = NULL) +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        plot.title = element_text(hjust = 0.5))
+```
+
+## Correlation matrix
+
+```{r}
+cor = round(cor(temp_data), 2)
+
+ggcorrplot(cor,
+  method = "square", type = "upper", 
+  lab = TRUE, lab_size = 3.5,
+  title = "Correlation Matrix",
+  legend.title = "Pearson\nCorrelation\n")
+```
+
+## Scatter plot
+
+-   `layer_height` vs. `roughness` by `material` :
+
+```{r}
+ggplot(data = temp_data,
+  aes(x = layer_height, y = roughness, color = factor(material))) +
+  geom_point(size = 3)
+```
+
+-   `fan_speed` vs. `tension_strength` by `material` :
+
+```{r}
+ggplot(data = temp_data,
+  aes(x = fan_speed, y = tension_strenght, color = factor(material))) +
+  geom_point(size = 3)
+```
+
+-   `infill_pattern` vs. `elongation` by `material`:
+
+```{r}
+ggplot(data = temp_data,
+  aes(x = infill_pattern, y = elongation, color = factor(material))) +
+  xlim(-0.5, 1.5) +
+  geom_point(size = 3)
+```
+
+
+# Random forest
+
+```{r}
+set.seed(75) # seed for reproducibility
+
+train.rows <- sample(rownames(temp_data), dim(temp_data)[1] * 0.8)
+test.rows <- setdiff(rownames(temp_data), train.rows)
+
+train.data <- temp_data[train.rows,]
+test.data <- temp_data[test.rows,]
+
+# Predict roughness while excluding tension strength and elongation
+train.data <- train.data[, !colnames(train.data) %in% c("tension_strenght", "elongation")]
+
+set.seed(75) # seed for randomness in model
+
+# Define cross-validation parameters
+control <- trainControl(method = "repeatedcv", number = 5, repeats = 5)
+
+# Train random forest model
+rf_model <- train(roughness ~ ., data = train.data, method = "rf", trControl = control)
+
+print(rf_model)
+print(rf_model$finalModel)
+```
+
+```{r}
+# Make predictions
+rf_model.predict1 <- predict(rf_model, newdata = train.data)
+rf_model.predict2 <- predict(rf_model, newdata = test.data)
+
+# Calculate NMAE for training data
+nmae_train <- mean(abs(rf_model.predict1 - train.data$roughness)) / 
+              (max(train.data$roughness) - min(train.data$roughness))
+
+# Calculate NMAE for test data
+nmae_test <- mean(abs(rf_model.predict2 - test.data$roughness)) / 
+             (max(test.data$roughness) - min(test.data$roughness))
+
+print(paste("NMAE Train (Roughness):", round(nmae_train, 7)))
+print(paste("NMAE Test (Roughness):", round(nmae_test, 7)))
+```
+
+```{r}
+actual <- test.data$roughness
+predict <- rf_model.predict2
+rss <- sum((predict - actual) ^ 2)
+tss <- sum((actual - mean(actual)) ^ 2)
+rsq <- 1 - rss/tss
+print(rsq)
+```
+
+## Tensile strength
+
+```{r}
+set.seed(75)
+
+train.rows <- sample(rownames(temp_data), dim(temp_data)[1] * 0.8)
+test.rows <- setdiff(rownames(temp_data), train.rows)
+
+train.data <- temp_data[train.rows,]
+test.data <- temp_data[test.rows,]
+
+train.data <- train.data[, !colnames(train.data) %in% c("roughness", "elongation")]
+
+set.seed(75)
+
+control <- trainControl(method = "repeatedcv", number = 5, repeats = 5)
+
+rf_model <- train(tension_strenght ~ ., data = train.data, method = "rf", trControl = control)
+
+# print(rf_model)
+# print(rf_model$finalModel)
+
+rf_model.predict1 <- predict(rf_model, newdata = train.data)
+rf_model.predict2 <- predict(rf_model, newdata = test.data)
+
+nmae_train <- mean(abs(rf_model.predict1 - train.data$tension_strenght)) / 
+              (max(train.data$tension_strenght) - min(train.data$tension_strenght))
+
+nmae_test <- mean(abs(rf_model.predict2 - test.data$tension_strenght)) / 
+             (max(test.data$tension_strenght) - min(test.data$tension_strenght))
+
+print(paste("NMAE Train (Tensile Strength):", round(nmae_train, 7)))
+print(paste("NMAE Test (Tensile Strength):", round(nmae_test, 7)))
+
+actual <- test.data$tension_strenght
+predict <- rf_model.predict2
+rss <- sum((predict - actual) ^ 2)
+tss <- sum((actual - mean(actual)) ^ 2)
+rsq <- 1 - rss/tss
+print(rsq)
+```
+
+## Elongation
+
+```{r}
+set.seed(75)
+
+train.rows <- sample(rownames(temp_data), dim(temp_data)[1] * 0.8)
+test.rows <- setdiff(rownames(temp_data), train.rows)
+
+train.data <- temp_data[train.rows,]
+test.data <- temp_data[test.rows,]
+
+train.data <- train.data[, !colnames(train.data) %in% c("roughness", "tension_strenght")]
+
+set.seed(75)
+
+control <- trainControl(method = "repeatedcv", number = 5, repeats = 5)
+
+rf_model <- train(elongation ~ ., data = train.data, method = "rf", trControl = control)
+
+# print(rf_model)
+# print(rf_model$finalModel)
+
+rf_model.predict1 <- predict(rf_model, newdata = train.data)
+rf_model.predict2 <- predict(rf_model, newdata = test.data)
+
+nmae_train <- mean(abs(rf_model.predict1 - train.data$elongation)) / 
+              (max(train.data$elongation) - min(train.data$elongation))
+
+nmae_test <- mean(abs(rf_model.predict2 - test.data$elongation)) / 
+             (max(test.data$elongation) - min(test.data$elongation))
+
+print(paste("NMAE Train (Elongation):", round(nmae_train, 7)))
+print(paste("NMAE Test (Elongation):", round(nmae_test, 7)))
+
+actual <- test.data$elongation
+predict <- rf_model.predict2
+rss <- sum((predict - actual) ^ 2)
+tss <- sum((actual - mean(actual)) ^ 2)
+rsq <- 1 - rss/tss
+print(rsq)
+```
+
+# Elastic Net Regression
+
+## Roughness
+
+```{r}
+set.seed(75)
+
+train.rows <- sample(rownames(temp_data), dim(temp_data)[1] * 0.8)
+test.rows <- setdiff(rownames(temp_data), train.rows)
+
+train.data.rough <- temp_data[train.rows,]
+test.data.rough <- temp_data[test.rows,]
+
+train.data.rough <- train.data.rough[, !colnames(train.data.rough) %in% 
+                                    c("tension_strenght", "elongation")]
+
+set.seed(75)
+control <- trainControl(method = "repeatedcv", number = 5, repeats = 5)
+en_model.rough <- train(roughness ~ ., data = train.data.rough, method = "glmnet",
+                        trControl = control, 
+                        tuneGrid = expand.grid(alpha = 0.5, lambda = seq(0.001, 1, length = 100)))
+
+print(en_model.rough)
+print(en_model.rough$finalModel)
+
+en_pred1.rough <- predict(en_model.rough, newdata = train.data.rough)
+en_pred2.rough <- predict(en_model.rough, newdata = test.data.rough)
+
+nmae_train.rough <- mean(abs(en_pred1.rough - train.data.rough$roughness)) / 
+                    (max(train.data.rough$roughness) - min(train.data.rough$roughness))
+nmae_test.rough <- mean(abs(en_pred2.rough - test.data.rough$roughness)) / 
+                   (max(test.data.rough$roughness) - min(test.data.rough$roughness))
+
+rsq.rough <- 1 - sum((test.data.rough$roughness - en_pred2.rough) ^ 2) / 
+                sum((test.data.rough$roughness - mean(test.data.rough$roughness)) ^ 2)
+
+print(paste("EN Roughness - NMAE Train:", round(nmae_train.rough, 7)))
+print(paste("EN Roughness - NMAE Test:", round(nmae_test.rough, 7)))
+print(paste("EN Roughness - R-squared:", round(rsq.rough, 7)))
+```
+
+## Tensile strength
+
+```{r}
+set.seed(75)
+
+train.rows <- sample(rownames(temp_data), dim(temp_data)[1] * 0.8)
+test.rows <- setdiff(rownames(temp_data), train.rows)
+
+train.data.tension <- temp_data[train.rows,]
+test.data.tension <- temp_data[test.rows,]
+
+train.data.tension <- train.data.tension[, !colnames(train.data.tension) %in% 
+                                        c("roughness", "elongation")]
+
+set.seed(75)
+control <- trainControl(method = "repeatedcv", number = 5, repeats = 5)
+en_model.tension <- train(tension_strenght ~ ., data = train.data.tension, method = "glmnet",
+                          trControl = control, 
+                          tuneGrid = expand.grid(alpha = 0.5, lambda = seq(0.001, 1, length = 100)))
+
+print(en_model.tension)
+print(en_model.tension$finalModel)
+
+en_pred1.tension <- predict(en_model.tension, newdata = train.data.tension)
+en_pred2.tension <- predict(en_model.tension, newdata = test.data.tension)
+
+nmae_train.tension <- mean(abs(en_pred1.tension - train.data.tension$tension_strenght)) / 
+                      (max(train.data.tension$tension_strenght) - min(train.data.tension$tension_strenght))
+nmae_test.tension <- mean(abs(en_pred2.tension - test.data.tension$tension_strenght)) / 
+                     (max(test.data.tension$tension_strenght) - min(test.data.tension$tension_strenght))
+
+rsq.tension <- 1 - sum((test.data.tension$tension_strenght - en_pred2.tension) ^ 2) / 
+                   sum((test.data.tension$tension_strenght - mean(test.data.tension$tension_strenght)) ^ 2)
+
+print(paste("EN Tensile Strength - NMAE Train:", round(nmae_train.tension, 7)))
+print(paste("EN Tensile Strength - NMAE Test:", round(nmae_test.tension, 7)))
+print(paste("EN Tensile Strength - R-squared:", round(rsq.tension, 7)))
+```
+
+## Elongation
+
+```{r}
+set.seed(75)
+
+train.rows <- sample(rownames(temp_data), dim(temp_data)[1] * 0.8)
+test.rows <- setdiff(rownames(temp_data), train.rows)
+
+train.data.elong <- temp_data[train.rows,]
+test.data.elong <- temp_data[test.rows,]
+
+train.data.elong <- train.data.elong[, !colnames(train.data.elong) %in% 
+                                    c("roughness", "tension_strenght")]
+
+set.seed(75)
+control <- trainControl(method = "repeatedcv", number = 5, repeats = 5)
+en_model.elong <- train(elongation ~ ., data = train.data.elong, method = "glmnet",
+                        trControl = control, 
+                        tuneGrid = expand.grid(alpha = 0.5, lambda = seq(0.001, 1, length = 100)))
+
+print(en_model.elong)
+print(en_model.elong$finalModel)
+
+en_pred1.elong <- predict(en_model.elong, newdata = train.data.elong)
+en_pred2.elong <- predict(en_model.elong, newdata = test.data.elong)
+
+nmae_train.elong <- mean(abs(en_pred1.elong - train.data.elong$elongation)) / 
+                    (max(train.data.elong$elongation) - min(train.data.elong$elongation))
+nmae_test.elong <- mean(abs(en_pred2.elong - test.data.elong$elongation)) / 
+                   (max(test.data.elong$elongation) - min(test.data.elong$elongation))
+
+rsq.elong <- 1 - sum((test.data.elong$elongation - en_pred2.elong) ^ 2) / 
+                  sum((test.data.elong$elongation - mean(test.data.elong$elongation)) ^ 2)
+
+print(paste("EN Elongation - NMAE Train:", round(nmae_train.elong, 7)))
+print(paste("EN Elongation - NMAE Test:", round(nmae_test.elong, 7)))
+print(paste("EN Elongation - R-squared:", round(rsq.elong, 7)))
+```
